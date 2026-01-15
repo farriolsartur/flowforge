@@ -1,0 +1,43 @@
+global:
+  name: distributed_pipeline
+  version: "2.0"
+  defaults:
+    serialization: msgpack
+    distribution: fan_out
+    backpressure:
+      mode: block
+      queue_size: 500
+  sync_strategy: retry_backoff
+
+workers:
+  - name: data_worker
+    host: localhost
+  - name: processing_worker
+    host: localhost
+    config:
+      threads: 4
+
+data_providers:
+  - name: data_source
+    type: csv_reader
+    worker: data_worker
+    config:
+      path: "/data/input.csv"
+
+algorithms:
+  - name: processor_1
+    type: threshold_filter
+    worker: processing_worker
+    config:
+      threshold: 0.5
+  - name: processor_2
+    type: threshold_filter
+    worker: processing_worker
+    config:
+      threshold: 0.8
+
+connections:
+  - source: data_source
+    targets: [processor_1, processor_2]
+    distribution: fan_out
+    serialization: msgpack

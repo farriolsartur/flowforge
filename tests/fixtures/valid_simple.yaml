@@ -1,0 +1,23 @@
+global:
+  name: simple_pipeline
+  version: "1.0"
+  defaults:
+    serialization: json
+    distribution: fan_out
+
+algorithms:
+  - name: printer_1
+    type: printer
+    config:
+      prefix: "[OUTPUT]"
+
+data_providers:
+  - name: counter_1
+    type: counter
+    config:
+      count: 100
+      interval: 0.1
+
+connections:
+  - source: counter_1
+    targets: [printer_1]

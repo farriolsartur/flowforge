@@ -1,0 +1,22 @@
+global:
+  name: invalid_worker_ref
+  version: "1.0"
+
+workers:
+  - name: worker_1
+    host: localhost
+
+algorithms:
+  - name: algo_1
+    type: processor
+    worker: nonexistent_worker
+    config: {}
+
+data_providers:
+  - name: provider_1
+    type: producer
+    config: {}
+
+connections:
+  - source: provider_1
+    targets: [algo_1]

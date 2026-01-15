@@ -1,0 +1,29 @@
+global:
+  name: competing_pipeline
+  version: "1.0"
+  defaults:
+    distribution: competing
+    strategy: round_robin
+
+algorithms:
+  - name: worker_1
+    type: processor
+    config: {}
+  - name: worker_2
+    type: processor
+    config: {}
+  - name: worker_3
+    type: processor
+    config: {}
+
+data_providers:
+  - name: producer_1
+    type: producer
+    config:
+      count: 100
+
+connections:
+  - source: producer_1
+    targets: [worker_1, worker_2, worker_3]
+    distribution: competing
+    strategy: round_robin

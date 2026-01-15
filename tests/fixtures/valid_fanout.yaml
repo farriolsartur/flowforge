@@ -1,0 +1,27 @@
+global:
+  name: fanout_pipeline
+  version: "1.0"
+  defaults:
+    distribution: fan_out
+
+algorithms:
+  - name: printer_1
+    type: printer
+    config: {}
+  - name: printer_2
+    type: printer
+    config: {}
+  - name: printer_3
+    type: printer
+    config: {}
+
+data_providers:
+  - name: counter_1
+    type: counter
+    config:
+      count: 50
+
+connections:
+  - source: counter_1
+    targets: [printer_1, printer_2, printer_3]
+    distribution: fan_out

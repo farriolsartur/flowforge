@@ -1,0 +1,12 @@
+global:
+  name: invalid_pipeline
+  version: "1.0"
+
+algorithms:
+  - name: algo_1
+    type: processor
+    config: {}
+
+connections:
+  - source: nonexistent_provider
+    targets: [algo_1]

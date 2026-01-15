@@ -1,0 +1,17 @@
+global:
+  name: invalid_topology
+  version: "1.0"
+
+algorithms:
+  - name: algo_1
+    type: processor
+    config: {}
+
+data_providers:
+  - name: provider_1
+    type: producer
+    config: {}
+
+connections:
+  - source: algo_1
+    targets: [algo_1]

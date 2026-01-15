@@ -38,6 +38,17 @@ from flowforge.communication import (
     StartupSyncStrategy,
     TransportType,
 )
+from flowforge.config import (
+    BackpressureConfig,
+    ComponentInstanceConfig,
+    ConfigLoader,
+    ConnectionConfig,
+    DefaultsConfig,
+    GlobalConfig,
+    PipelineConfig,
+    TransportConfig,
+    WorkerConfig,
+)
 from flowforge.components import (
     Algorithm,
     Component,
@@ -110,4 +121,14 @@ __all__ = [
     # Component decorators
     "algorithm",
     "data_provider",
+    # Config (Phase 4)
+    "ConfigLoader",
+    "BackpressureConfig",
+    "ComponentInstanceConfig",
+    "ConnectionConfig",
+    "DefaultsConfig",
+    "GlobalConfig",
+    "PipelineConfig",
+    "TransportConfig",
+    "WorkerConfig",
 ]
