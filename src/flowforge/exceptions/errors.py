@@ -32,3 +32,19 @@ class ComponentNotFoundError(FlowForgeError):
         if message is None:
             message = f"Component '{component_name}' not found in registry"
         super().__init__(message)
+
+
+class ChannelClosedError(FlowForgeError):
+    """Raised when attempting to use a closed channel.
+
+    This occurs when send() or receive() is called on a channel
+    that has already been closed.
+    """
+
+    def __init__(self, channel_name: str | None = None) -> None:
+        self.channel_name = channel_name
+        if channel_name:
+            message = f"Channel '{channel_name}' has been closed"
+        else:
+            message = "Channel has been closed"
+        super().__init__(message)
