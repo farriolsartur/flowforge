@@ -133,7 +133,7 @@ class TestResolvedChannel:
         """Test creating a ResolvedChannel."""
         channel = ResolvedChannel(
             source="source",
-            targets=("target1", "target2"),
+            target="target1",
             transport_type=TransportType.INPROCESS,
             distribution_mode=DistributionMode.FAN_OUT,
             strategy=CompetingStrategy.ROUND_ROBIN,
@@ -141,17 +141,18 @@ class TestResolvedChannel:
         )
 
         assert channel.source == "source"
-        assert channel.targets == ("target1", "target2")
+        assert channel.target == "target1"
         assert channel.transport_type == TransportType.INPROCESS
         assert channel.distribution_mode == DistributionMode.FAN_OUT
         assert channel.strategy == CompetingStrategy.ROUND_ROBIN
         assert channel.queue_size == 1000
+        assert channel.serialization == "json"
 
     def test_resolved_channel_immutable(self):
         """Test that ResolvedChannel is immutable (frozen dataclass)."""
         channel = ResolvedChannel(
             source="source",
-            targets=("target",),
+            target="target",
             transport_type=TransportType.INPROCESS,
             distribution_mode=DistributionMode.FAN_OUT,
             strategy=CompetingStrategy.ROUND_ROBIN,
@@ -180,7 +181,7 @@ class TestTopologyResolver:
 
         assert len(resolved) == 1
         assert resolved[0].source == "counter"
-        assert resolved[0].targets == ("printer",)
+        assert resolved[0].target == "printer"
         assert resolved[0].transport_type == TransportType.INPROCESS
         assert resolved[0].distribution_mode == DistributionMode.FAN_OUT
 
@@ -286,8 +287,12 @@ connections:
         resolver = TopologyResolver()
         resolved = resolver.resolve(config)
 
-        assert len(resolved) == 1
-        assert resolved[0].targets == ("target1", "target2", "target3")
+        assert len(resolved) == 3
+        assert {channel.target for channel in resolved} == {
+            "target1",
+            "target2",
+            "target3",
+        }
 
     def test_force_inprocess_logs_warning_with_workers(
         self, tmp_path, register_test_components, caplog
@@ -943,3 +948,276 @@ connections:
 
         assert "provider" in on_stop_called
         assert "algo" in on_stop_called
+
+
+# =============================================================================
+# TestTopologyResolverTransportTypes
+# =============================================================================
+
+
+class TestTopologyResolverTransportTypes:
+    """Tests for TopologyResolver transport type determination."""
+
+    def test_inprocess_for_same_worker(self, tmp_path, register_test_components):
+        """Same worker = INPROCESS."""
+        yaml_content = """
+global:
+  name: same-worker-test
+
+workers:
+  - name: worker1
+    host: localhost
+
+data_providers:
+  - name: source
+    type: test_counter
+    worker: worker1
+
+algorithms:
+  - name: sink
+    type: test_printer
+    worker: worker1
+
+connections:
+  - source: source
+    targets: [sink]
+"""
+        config_file = tmp_path / "pipeline.yaml"
+        config_file.write_text(yaml_content)
+
+        loader = ConfigLoader()
+        config = loader.load(str(config_file))
+
+        resolver = TopologyResolver()
+        resolved = resolver.resolve(config, worker_name="worker1")
+
+        assert len(resolved) == 1
+        assert resolved[0].transport_type == TransportType.INPROCESS
+
+    def test_inprocess_when_no_workers(self, tmp_path, register_test_components):
+        """No workers = INPROCESS."""
+        yaml_content = """
+global:
+  name: no-workers-test
+
+data_providers:
+  - name: source
+    type: test_counter
+
+algorithms:
+  - name: sink
+    type: test_printer
+
+connections:
+  - source: source
+    targets: [sink]
+"""
+        config_file = tmp_path / "pipeline.yaml"
+        config_file.write_text(yaml_content)
+
+        loader = ConfigLoader()
+        config = loader.load(str(config_file))
+
+        resolver = TopologyResolver()
+        resolved = resolver.resolve(config)
+
+        assert len(resolved) == 1
+        assert resolved[0].transport_type == TransportType.INPROCESS
+
+    def test_multiprocess_for_different_workers_same_host(
+        self, tmp_path, register_test_components
+    ):
+        """Same host = MULTIPROCESS."""
+        yaml_content = """
+global:
+  name: multiprocess-test
+
+workers:
+  - name: worker1
+    host: localhost
+  - name: worker2
+    host: localhost
+
+data_providers:
+  - name: source
+    type: test_counter
+    worker: worker1
+
+algorithms:
+  - name: sink
+    type: test_printer
+    worker: worker2
+
+connections:
+  - source: source
+    targets: [sink]
+"""
+        config_file = tmp_path / "pipeline.yaml"
+        config_file.write_text(yaml_content)
+
+        loader = ConfigLoader()
+        config = loader.load(str(config_file))
+
+        resolver = TopologyResolver()
+        # Resolve from worker1's perspective (source is on worker1)
+        resolved = resolver.resolve(config, worker_name="worker1")
+
+        assert len(resolved) == 1
+        assert resolved[0].transport_type == TransportType.MULTIPROCESS
+
+    def test_distributed_for_different_hosts(self, tmp_path, register_test_components):
+        """Diff hosts = DISTRIBUTED."""
+        yaml_content = """
+global:
+  name: distributed-test
+
+workers:
+  - name: worker1
+    host: host_a.local
+  - name: worker2
+    host: host_b.local
+
+data_providers:
+  - name: source
+    type: test_counter
+    worker: worker1
+
+algorithms:
+  - name: sink
+    type: test_printer
+    worker: worker2
+
+connections:
+  - source: source
+    targets: [sink]
+"""
+        config_file = tmp_path / "pipeline.yaml"
+        config_file.write_text(yaml_content)
+
+        loader = ConfigLoader()
+        config = loader.load(str(config_file))
+
+        resolver = TopologyResolver()
+        resolved = resolver.resolve(config, worker_name="worker1")
+
+        assert len(resolved) == 1
+        assert resolved[0].transport_type == TransportType.DISTRIBUTED
+
+    def test_force_inprocess_overrides_all(self, tmp_path, register_test_components):
+        """Force flag = always INPROCESS."""
+        yaml_content = """
+global:
+  name: force-inprocess-test
+
+workers:
+  - name: worker1
+    host: host_a.local
+  - name: worker2
+    host: host_b.local
+
+data_providers:
+  - name: source
+    type: test_counter
+    worker: worker1
+
+algorithms:
+  - name: sink
+    type: test_printer
+    worker: worker2
+
+connections:
+  - source: source
+    targets: [sink]
+"""
+        config_file = tmp_path / "pipeline.yaml"
+        config_file.write_text(yaml_content)
+
+        loader = ConfigLoader()
+        config = loader.load(str(config_file))
+
+        resolver = TopologyResolver()
+        # Even though workers are on different hosts, force_inprocess should win
+        resolved = resolver.resolve(config, worker_name=None, force_inprocess=True)
+
+        assert len(resolved) == 1
+        assert resolved[0].transport_type == TransportType.INPROCESS
+
+    def test_endpoint_generated_for_distributed(self, tmp_path, register_test_components):
+        """endpoint not None for DISTRIBUTED."""
+        yaml_content = """
+global:
+  name: endpoint-test
+
+workers:
+  - name: worker1
+    host: host_a.local
+  - name: worker2
+    host: host_b.local
+
+data_providers:
+  - name: source
+    type: test_counter
+    worker: worker1
+
+algorithms:
+  - name: sink
+    type: test_printer
+    worker: worker2
+
+connections:
+  - source: source
+    targets: [sink]
+"""
+        config_file = tmp_path / "pipeline.yaml"
+        config_file.write_text(yaml_content)
+
+        loader = ConfigLoader()
+        config = loader.load(str(config_file))
+
+        resolver = TopologyResolver()
+        resolved = resolver.resolve(config, worker_name="worker1")
+
+        assert len(resolved) == 1
+        assert resolved[0].transport_type == TransportType.DISTRIBUTED
+        assert resolved[0].endpoint is not None
+        assert "host_b.local" in resolved[0].endpoint
+        assert resolved[0].endpoint.startswith("tcp://")
+
+    def test_endpoint_none_for_non_distributed(self, tmp_path, register_test_components):
+        """endpoint is None for non-DISTRIBUTED."""
+        yaml_content = """
+global:
+  name: no-endpoint-test
+
+workers:
+  - name: worker1
+    host: localhost
+  - name: worker2
+    host: localhost
+
+data_providers:
+  - name: source
+    type: test_counter
+    worker: worker1
+
+algorithms:
+  - name: sink
+    type: test_printer
+    worker: worker2
+
+connections:
+  - source: source
+    targets: [sink]
+"""
+        config_file = tmp_path / "pipeline.yaml"
+        config_file.write_text(yaml_content)
+
+        loader = ConfigLoader()
+        config = loader.load(str(config_file))
+
+        resolver = TopologyResolver()
+        resolved = resolver.resolve(config, worker_name="worker1")
+
+        assert len(resolved) == 1
+        assert resolved[0].transport_type == TransportType.MULTIPROCESS
+        assert resolved[0].endpoint is None

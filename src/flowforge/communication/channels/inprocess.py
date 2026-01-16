@@ -6,7 +6,8 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
-from flowforge.exceptions import ChannelClosedError
+from flowforge.communication.enums import BackpressureMode
+from flowforge.exceptions import BackpressureDroppedError, ChannelClosedError
 
 if TYPE_CHECKING:
     from flowforge.messages import Message
@@ -37,6 +38,7 @@ class InProcessOutputChannel:
         self,
         queue: asyncio.Queue[Message[Any]],
         name: str | None = None,
+        backpressure_mode: BackpressureMode = BackpressureMode.BLOCK,
     ) -> None:
         """Initialize the output channel.
 
@@ -46,6 +48,7 @@ class InProcessOutputChannel:
         """
         self._queue = queue
         self._closed = False
+        self._backpressure_mode = backpressure_mode
         self._name = name or f"output-{id(self)}"
 
     async def send(self, message: Message[Any]) -> None:
@@ -60,7 +63,13 @@ class InProcessOutputChannel:
         if self._closed:
             raise ChannelClosedError(self._name)
 
-        await self._queue.put(message)
+        if self._backpressure_mode == BackpressureMode.DROP:
+            try:
+                self._queue.put_nowait(message)
+            except asyncio.QueueFull as exc:
+                raise BackpressureDroppedError(self._name) from exc
+        else:
+            await self._queue.put(message)
         logger.debug(
             "Channel '%s' sent %s message",
             self._name,

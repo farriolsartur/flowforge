@@ -12,7 +12,13 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from flowforge.communication.channels.multiplex import MultiplexInputChannel
+from flowforge.communication.enums import StartupSyncStrategy, TransportType
 from flowforge.communication.factory import ChannelFactory
+from flowforge.communication.sync.control import (
+    MultiprocessControlChannel,
+    ZmqControlChannel,
+)
+from flowforge.communication.sync.retry import ExponentialBackoffPolicy
 from flowforge.components.factory import ComponentFactory
 from flowforge.components.protocols import Triggerable
 from flowforge.config.loader import ConfigLoader
@@ -82,12 +88,16 @@ class Engine:
         self._config: PipelineConfig | None = None
         self._context: WorkerContext | None = None
         self._components: dict[str, Component[Any]] = {}
-        self._channels: list[tuple[OutputChannel, InputChannel]] = []
+        self._channels: list[tuple[OutputChannel | None, InputChannel | None]] = []
         self._channel_groups: dict[str, ChannelGroup] = {}
-        self._target_inputs: dict[str, list[InputChannel]] = {}
+        self._target_inputs: dict[str, list[tuple[InputChannel, int]]] = {}
+        self._source_targets: dict[str, set[str]] = {}
         self._receiver_tasks: list[asyncio.Task[None]] = []
         self._triggerable_tasks: list[asyncio.Task[None]] = []
         self._multiplex_channels: list[MultiplexInputChannel] = []
+        self._channel_factory: ChannelFactory | None = None
+        self._retry_policy: ExponentialBackoffPolicy | None = None
+        self._control_channel: Any | None = None
         self._is_running = False
 
     async def run(self, force_inprocess: bool = False) -> None:
@@ -124,10 +134,14 @@ class Engine:
             # Phase 3: Start receivers (begin listening)
             self._start_receivers()
 
-            # Phase 4: Start triggerables (components with run() method)
+            # Phase 4: Sync startup if control channel is enabled
+            await self._broadcast_ready_components()
+            await self._wait_for_control_dependencies()
+
+            # Phase 5: Start triggerables (components with run() method)
             self._start_triggerables()
 
-            # Phase 5: Wait for completion
+            # Phase 6: Wait for completion
             await self._await_completion()
 
         except asyncio.CancelledError:
@@ -162,6 +176,12 @@ class Engine:
             self._config.global_config.version,
         )
 
+        # Step 2.5: Configure startup sync strategy
+        if self._config.global_config.sync_strategy == StartupSyncStrategy.RETRY_BACKOFF:
+            self._retry_policy = ExponentialBackoffPolicy()
+        else:
+            self._retry_policy = None
+
         # Step 3: Create worker context
         self._context = WorkerContext(
             worker_name=self._worker_name,
@@ -178,7 +198,15 @@ class Engine:
         )
 
         # Step 5: Create channels and components
+        transport_config = (
+            self._config.global_config.transport.config
+            if self._config.global_config.transport
+            else {}
+        )
+        self._channel_factory = ChannelFactory(transport_config=transport_config)
         self._create_channels(resolved_channels)
+        await self._connect_distributed_channels()
+        await self._initialize_control_channel()
         self._create_components()
         await self._wire_components()
 
@@ -197,43 +225,102 @@ class Engine:
         Args:
             resolved: List of resolved channel configurations.
         """
-        factory = ChannelFactory()
+        if not self._context or not self._channel_factory:
+            raise RuntimeError("Context or channel factory not initialized")
+
+        factory = self._channel_factory
+        local_components = {c.name for c in self._context.get_components()}
+        self._channels.clear()
+        self._channel_groups.clear()
+        self._target_inputs.clear()
+        transport_config = (
+            self._config.global_config.transport.config
+            if self._config and self._config.global_config.transport
+            else {}
+        )
+        high_water_mark = int(transport_config.get("high_water_mark", 1000))
 
         # Track channels per source (for creating channel groups)
         # source_name -> list of output_channels
         source_outputs: dict[str, list[OutputChannel]] = {}
 
-        for channel_config in resolved:
-            if channel_config.source not in source_outputs:
-                source_outputs[channel_config.source] = []
+        self._source_targets.clear()
+        source_settings: dict[str, tuple[DistributionMode, CompetingStrategy]] = {}
 
-            for target in channel_config.targets:
-                # Create channel pair
+        for channel_config in resolved:
+            source = channel_config.source
+            target = channel_config.target
+            source_local = source in local_components
+            target_local = target in local_components
+
+            if channel_config.transport_type == TransportType.INPROCESS and source_local and target_local:
                 output_ch, input_ch = factory.create_inprocess_pair(
                     queue_size=channel_config.queue_size,
-                    name=f"{channel_config.source}->{target}",
+                    name=f"{source}->{target}",
+                    backpressure_mode=channel_config.backpressure_mode,
+                )
+                self._channels.append((output_ch, input_ch))
+                source_outputs.setdefault(source, []).append(output_ch)
+                self._source_targets.setdefault(source, set()).add(target)
+                source_settings.setdefault(
+                    source,
+                    (channel_config.distribution_mode, channel_config.strategy),
+                )
+                self._target_inputs.setdefault(target, []).append(
+                    (input_ch, channel_config.queue_size)
+                )
+                continue
+
+            output_ch: OutputChannel | None = None
+            input_ch: InputChannel | None = None
+
+            if source_local:
+                output_ch = factory.create_output_channel(
+                    channel_config.transport_type,
+                    name=f"{source}->{target}",
+                    serializer_name=channel_config.serialization,
+                    backpressure_mode=channel_config.backpressure_mode,
+                    retry_policy=self._retry_policy,
+                    endpoint=channel_config.endpoint,
+                    distribution_mode=channel_config.distribution_mode,
+                    queue_size=channel_config.queue_size,
+                    high_water_mark=high_water_mark,
+                )
+                self._channels.append((output_ch, None))
+                source_outputs.setdefault(source, []).append(output_ch)
+                self._source_targets.setdefault(source, set()).add(target)
+                source_settings.setdefault(
+                    source,
+                    (channel_config.distribution_mode, channel_config.strategy),
                 )
 
-                self._channels.append((output_ch, input_ch))
-                source_outputs[channel_config.source].append(output_ch)
-
-                # Collect all input channels for each target (supports multiple sources)
-                if target not in self._target_inputs:
-                    self._target_inputs[target] = []
-                self._target_inputs[target].append(input_ch)
+            if target_local:
+                input_ch = factory.create_input_channel(
+                    channel_config.transport_type,
+                    name=f"{source}->{target}",
+                    serializer_name=channel_config.serialization,
+                    retry_policy=self._retry_policy,
+                    endpoint=channel_config.endpoint,
+                    distribution_mode=channel_config.distribution_mode,
+                    queue_size=channel_config.queue_size,
+                    high_water_mark=high_water_mark,
+                )
+                self._channels.append((None, input_ch))
+                self._target_inputs.setdefault(target, []).append(
+                    (input_ch, channel_config.queue_size)
+                )
 
         # Create channel groups for each source
-        for channel_config in resolved:
-            outputs = source_outputs.get(channel_config.source, [])
-
+        for source, outputs in source_outputs.items():
             if outputs:
+                distribution_mode, strategy = source_settings[source]
                 group = factory.create_channel_group(
-                    distribution_mode=channel_config.distribution_mode,
+                    distribution_mode=distribution_mode,
                     channels=outputs,
-                    strategy=channel_config.strategy,
-                    name=f"{channel_config.source}-group",
+                    strategy=strategy,
+                    name=f"{source}-group",
                 )
-                self._channel_groups[channel_config.source] = group
+                self._channel_groups[source] = group
 
     def _create_components(self) -> None:
         """Create all component instances."""
@@ -256,6 +343,123 @@ class Engine:
                 instance_config.type,
             )
 
+    async def _connect_distributed_channels(self) -> None:
+        """Connect distributed channels (inputs bind before outputs connect)."""
+        input_channels = [
+            input_ch
+            for _, input_ch in self._channels
+            if input_ch is not None and hasattr(input_ch, "connect")
+        ]
+        output_channels = [
+            output_ch
+            for output_ch, _ in self._channels
+            if output_ch is not None and hasattr(output_ch, "connect")
+        ]
+
+        for input_ch in input_channels:
+            await input_ch.connect()
+
+        for output_ch in output_channels:
+            await output_ch.connect()
+
+    async def _initialize_control_channel(self) -> None:
+        """Initialize control channel if configured."""
+        if not self._config:
+            return
+        if self._config.global_config.sync_strategy != StartupSyncStrategy.CONTROL_CHANNEL:
+            return
+        if not self._config.workers:
+            return
+
+        transport_config = (
+            self._config.global_config.transport.config
+            if self._config.global_config.transport
+            else {}
+        )
+        high_water_mark = int(transport_config.get("high_water_mark", 1000))
+
+        worker_index = {w.name: i for i, w in enumerate(self._config.workers)}
+        if self._worker_name not in worker_index:
+            raise PipelineConfigError(
+                f"Worker '{self._worker_name}' not found in configuration"
+            )
+
+        hosts = {w.host for w in self._config.workers}
+        if len(hosts) <= 1:
+            local_worker = self._config.workers[worker_index[self._worker_name]]
+            host = transport_config.get("control_manager_host", local_worker.host)
+            port = int(transport_config.get("control_manager_port", 50051))
+            authkey_raw = transport_config.get(
+                "control_manager_authkey", "flowforge"
+            )
+            authkey = (
+                authkey_raw
+                if isinstance(authkey_raw, bytes)
+                else str(authkey_raw).encode("utf-8")
+            )
+            self._control_channel = MultiprocessControlChannel(
+                (host, port),
+                authkey,
+            )
+        else:
+            base_port = int(transport_config.get("control_base_port", 5600))
+            endpoints = [
+                f"tcp://{w.host}:{base_port + i}"
+                for i, w in enumerate(self._config.workers)
+            ]
+            bind_endpoint = endpoints[worker_index[self._worker_name]]
+            self._control_channel = ZmqControlChannel(
+                bind_endpoint=bind_endpoint,
+                connect_endpoints=endpoints,
+                name=f"control-{self._worker_name}",
+                retry_policy=self._retry_policy,
+                high_water_mark=high_water_mark,
+            )
+
+        await self._control_channel.connect()
+
+    async def _broadcast_ready_components(self) -> None:
+        """Broadcast readiness for local receiver components."""
+        if not self._control_channel:
+            return
+        ready = [name for name in self._target_inputs.keys() if name in self._components]
+        if ready:
+            await self._control_channel.broadcast_ready(ready)
+
+    async def _wait_for_control_dependencies(self) -> None:
+        """Wait for dependencies to become ready before starting senders."""
+        if not self._control_channel:
+            return
+
+        dependencies: set[str] = set()
+        for source, targets in self._source_targets.items():
+            component = self._components.get(source)
+            if component and isinstance(component, Triggerable):
+                dependencies.update(targets)
+
+        # Local receivers are already started; don't wait on them.
+        dependencies -= set(self._target_inputs.keys())
+
+        if not dependencies:
+            return
+
+        transport_config = (
+            self._config.global_config.transport.config
+            if self._config and self._config.global_config.transport
+            else {}
+        )
+        timeout_raw = transport_config.get("startup_timeout")
+        timeout = float(timeout_raw) if timeout_raw is not None else 30.0
+
+        ready = await self._control_channel.wait_for_dependencies(
+            sorted(dependencies),
+            timeout=timeout,
+        )
+        if not ready:
+            raise RuntimeError(
+                "Startup dependencies not satisfied before timeout"
+            )
+
     async def _wire_components(self) -> None:
         """Wire channels to components.
 
@@ -275,19 +479,24 @@ class Engine:
                     )
 
         # Wire input channels to receivers
-        for target_name, input_channels in self._target_inputs.items():
+        for target_name, input_bindings in self._target_inputs.items():
             if target_name in self._components:
                 component = self._components[target_name]
                 if hasattr(component, "_input_channel"):
+                    input_channels = [binding[0] for binding in input_bindings]
+                    queue_sizes = [binding[1] for binding in input_bindings]
+
                     if len(input_channels) == 0:
                         input_channel = None
                     elif len(input_channels) == 1:
                         input_channel = input_channels[0]
                     else:
                         # Multiple sources - wrap in multiplex channel
+                        combined_size = min(queue_sizes) if queue_sizes else 0
                         input_channel = MultiplexInputChannel(
                             input_channels,
                             name=f"{target_name}-multiplex",
+                            queue_size=combined_size,
                         )
                         await input_channel.start()
                         self._multiplex_channels.append(input_channel)
@@ -457,19 +666,36 @@ class Engine:
 
         # Step 7: Close all individual channels
         for output_ch, input_ch in self._channels:
+            if output_ch is not None:
+                try:
+                    await output_ch.close()
+                except Exception:
+                    pass  # Channel may already be closed
+            if input_ch is not None:
+                try:
+                    await input_ch.close()
+                except Exception:
+                    pass
+
+        # Step 8: Close control channel
+        if self._control_channel is not None:
             try:
-                await output_ch.close()
-            except Exception:
-                pass  # Channel may already be closed
-            try:
-                await input_ch.close()
+                await self._control_channel.close()
             except Exception:
                 pass
+
+        # Step 9: Close factory-managed resources
+        if self._channel_factory is not None:
+            await self._channel_factory.close()
+            self._channel_factory = None
 
         # Clear state
         self._receiver_tasks.clear()
         self._triggerable_tasks.clear()
         self._multiplex_channels.clear()
+        self._channels.clear()
+        self._source_targets.clear()
+        self._control_channel = None
         self._is_running = False
 
         logger.info("Engine shutdown complete")

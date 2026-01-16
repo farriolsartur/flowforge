@@ -4,6 +4,10 @@ from flowforge.communication.channels import (
     InProcessInputChannel,
     InProcessOutputChannel,
     MultiplexInputChannel,
+    MultiprocessInputChannel,
+    MultiprocessOutputChannel,
+    ZmqInputChannel,
+    ZmqOutputChannel,
 )
 from flowforge.communication.enums import (
     BackpressureMode,
@@ -30,6 +34,11 @@ from flowforge.communication.serialization import (
     MessagePackSerializer,
     get_serializer,
 )
+from flowforge.communication.sync import (
+    ExponentialBackoffPolicy,
+    MultiprocessControlChannel,
+    ZmqControlChannel,
+)
 
 __all__ = [
     # Enums
@@ -45,10 +54,17 @@ __all__ = [
     "Serializer",
     "RetryPolicy",
     "ControlChannel",
+    "ExponentialBackoffPolicy",
+    "MultiprocessControlChannel",
+    "ZmqControlChannel",
     # Channels
     "InProcessOutputChannel",
     "InProcessInputChannel",
     "MultiplexInputChannel",
+    "MultiprocessOutputChannel",
+    "MultiprocessInputChannel",
+    "ZmqOutputChannel",
+    "ZmqInputChannel",
     # Groups
     "FanOutChannelGroup",
     "CompetingChannelGroup",

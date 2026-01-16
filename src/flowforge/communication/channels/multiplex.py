@@ -10,7 +10,7 @@ from flowforge.exceptions import ChannelClosedError
 from flowforge.messages import Message, MessageType
 
 if TYPE_CHECKING:
-    from flowforge.communication.channels.inprocess import InProcessInputChannel
+    from flowforge.communication.protocols import InputChannel
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +30,9 @@ class MultiplexInputChannel:
 
     def __init__(
         self,
-        channels: list[InProcessInputChannel],
+        channels: list[InputChannel],
         name: str | None = None,
+        queue_size: int = 0,
     ) -> None:
         """Initialize the multiplex channel.
 
@@ -40,7 +41,9 @@ class MultiplexInputChannel:
             name: Optional name for debugging/logging.
         """
         self._channels = channels
-        self._combined_queue: asyncio.Queue[Message[Any]] = asyncio.Queue()
+        self._combined_queue: asyncio.Queue[Message[Any]] = asyncio.Queue(
+            maxsize=queue_size
+        )
         self._forwarder_tasks: list[asyncio.Task[None]] = []
         self._closed = False
         self._handler: Callable[[Message[Any]], Awaitable[None]] | None = None
@@ -59,7 +62,7 @@ class MultiplexInputChannel:
             len(self._channels),
         )
 
-    async def _forward_from(self, channel: InProcessInputChannel) -> None:
+    async def _forward_from(self, channel: InputChannel) -> None:
         """Forward messages from one channel to combined queue.
 
         END_OF_STREAM messages are held until all sources have finished.
@@ -68,7 +71,7 @@ class MultiplexInputChannel:
         """
         source_ended_normally = False
         try:
-            while not channel.is_closed and not self._closed:
+            while not self._closed:
                 message = await channel.receive()
 
                 if message.message_type == MessageType.END_OF_STREAM:
@@ -85,7 +88,8 @@ class MultiplexInputChannel:
         finally:
             # Ensure we track completion even on abnormal termination
             if not source_ended_normally:
-                await self._mark_source_complete(channel.name)
+                channel_name = getattr(channel, "name", f"input-{id(channel)}")
+                await self._mark_source_complete(channel_name)
 
     async def _mark_source_complete(self, source_name: str) -> None:
         """Mark a source as complete and send combined EOS if all done."""

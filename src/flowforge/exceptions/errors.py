@@ -48,3 +48,30 @@ class ChannelClosedError(FlowForgeError):
         else:
             message = "Channel has been closed"
         super().__init__(message)
+
+
+class BackpressureDroppedError(FlowForgeError):
+    """Raised when a message is dropped due to backpressure in drop mode."""
+
+    def __init__(self, channel_name: str | None = None) -> None:
+        self.channel_name = channel_name
+        if channel_name:
+            message = (
+                f"Channel '{channel_name}' dropped a message due to backpressure"
+            )
+        else:
+            message = "Message dropped due to backpressure"
+        super().__init__(message)
+
+
+class ConnectionRetryExhaustedError(FlowForgeError):
+    """Raised when all connection retry attempts are exhausted."""
+
+    def __init__(self, channel_name: str, endpoint: str, attempts: int) -> None:
+        self.channel_name = channel_name
+        self.endpoint = endpoint
+        self.attempts = attempts
+        super().__init__(
+            f"Channel '{channel_name}' failed to connect to {endpoint} "
+            f"after {attempts} attempts"
+        )

@@ -31,12 +31,15 @@ from flowforge.communication import (
     CompetingStrategy,
     ControlChannel,
     DistributionMode,
+    ExponentialBackoffPolicy,
     InputChannel,
+    MultiprocessControlChannel,
     OutputChannel,
     RetryPolicy,
     Serializer,
     StartupSyncStrategy,
     TransportType,
+    ZmqControlChannel,
 )
 from flowforge.config import (
     BackpressureConfig,
@@ -74,7 +77,10 @@ from flowforge.components import (
     get_component_type_registry,
 )
 from flowforge.exceptions import (
+    BackpressureDroppedError,
+    ChannelClosedError,
     ComponentNotFoundError,
+    ConnectionRetryExhaustedError,
     FlowForgeError,
     PipelineConfigError,
 )
@@ -89,6 +95,9 @@ __all__ = [
     "FlowForgeError",
     "PipelineConfigError",
     "ComponentNotFoundError",
+    "ChannelClosedError",
+    "BackpressureDroppedError",
+    "ConnectionRetryExhaustedError",
     # Messages
     "Message",
     "MessageType",
@@ -105,6 +114,9 @@ __all__ = [
     "Serializer",
     "RetryPolicy",
     "ControlChannel",
+    "ExponentialBackoffPolicy",
+    "MultiprocessControlChannel",
+    "ZmqControlChannel",
     # Component protocols
     "Triggerable",
     # Component base classes
