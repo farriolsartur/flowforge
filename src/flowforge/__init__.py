@@ -49,6 +49,12 @@ from flowforge.config import (
     TransportConfig,
     WorkerConfig,
 )
+from flowforge.engine import (
+    Engine,
+    ResolvedChannel,
+    TopologyResolver,
+    WorkerContext,
+)
 from flowforge.components import (
     Algorithm,
     Component,
@@ -131,4 +137,9 @@ __all__ = [
     "PipelineConfig",
     "TransportConfig",
     "WorkerConfig",
+    # Engine (Phase 5)
+    "Engine",
+    "ResolvedChannel",
+    "TopologyResolver",
+    "WorkerContext",
 ]

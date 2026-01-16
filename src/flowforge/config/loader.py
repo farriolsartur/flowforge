@@ -311,6 +311,11 @@ class ConfigLoader:
             List of validation errors.
         """
         errors: list[str] = []
+        defaults = config.global_config.defaults
+
+        # Track distribution settings per source to detect conflicts
+        # source -> (connection_index, effective_distribution, effective_strategy)
+        source_settings: dict[str, tuple[int, str, str]] = {}
 
         for i, conn in enumerate(config.connections):
             # Validate source
@@ -333,6 +338,23 @@ class ConfigLoader:
                 errors.append(
                     f"Connection {i}: component '{conn.source}' cannot target itself"
                 )
+
+            # Check for conflicting distribution/strategy on same source
+            effective_dist = (conn.distribution or defaults.distribution).value
+            effective_strat = (conn.strategy or defaults.strategy).value
+
+            if conn.source in source_settings:
+                prev_idx, prev_dist, prev_strat = source_settings[conn.source]
+                if effective_dist != prev_dist or effective_strat != prev_strat:
+                    errors.append(
+                        f"Connection {i}: source '{conn.source}' has conflicting "
+                        f"distribution settings with connection {prev_idx}. "
+                        f"Connection {prev_idx}: distribution={prev_dist}, strategy={prev_strat}. "
+                        f"Connection {i}: distribution={effective_dist}, strategy={effective_strat}. "
+                        f"A source component can only have one distribution mode across all its connections."
+                    )
+            else:
+                source_settings[conn.source] = (i, effective_dist, effective_strat)
 
         return errors
 

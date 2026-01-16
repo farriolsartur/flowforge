@@ -3,6 +3,7 @@
 from flowforge.communication.channels import (
     InProcessInputChannel,
     InProcessOutputChannel,
+    MultiplexInputChannel,
 )
 from flowforge.communication.enums import (
     BackpressureMode,
@@ -47,6 +48,7 @@ __all__ = [
     # Channels
     "InProcessOutputChannel",
     "InProcessInputChannel",
+    "MultiplexInputChannel",
     # Groups
     "FanOutChannelGroup",
     "CompetingChannelGroup",

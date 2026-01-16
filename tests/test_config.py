@@ -682,6 +682,180 @@ class TestConfigLoaderValidation:
         assert len(errors) >= 1
         assert any("nonexistent_worker" in e for e in errors)
 
+    def test_validate_conflicting_distribution_same_source(
+        self, loader: ConfigLoader
+    ) -> None:
+        """Test that conflicting distribution settings on same source are detected."""
+        config = PipelineConfig(
+            global_config=GlobalConfig(name="test"),
+            connections=[
+                ConnectionConfig(
+                    source="provider_1",
+                    targets=["algo_1", "algo_2"],
+                    distribution=DistributionMode.FAN_OUT,
+                ),
+                ConnectionConfig(
+                    source="provider_1",
+                    targets=["algo_3"],
+                    distribution=DistributionMode.COMPETING,
+                ),
+            ],
+            components_by_type={
+                "algorithm": [
+                    ComponentInstanceConfig(name="algo_1", type="test_algo"),
+                    ComponentInstanceConfig(name="algo_2", type="test_algo"),
+                    ComponentInstanceConfig(name="algo_3", type="test_algo"),
+                ],
+                "data_provider": [
+                    ComponentInstanceConfig(name="provider_1", type="test_provider")
+                ],
+            },
+        )
+
+        errors = loader.validate(config)
+        assert len(errors) >= 1
+        assert any("conflicting" in e.lower() and "provider_1" in e for e in errors)
+
+    def test_validate_conflicting_strategy_same_source(
+        self, loader: ConfigLoader
+    ) -> None:
+        """Test that conflicting strategy settings on same source are detected."""
+        config = PipelineConfig(
+            global_config=GlobalConfig(name="test"),
+            connections=[
+                ConnectionConfig(
+                    source="provider_1",
+                    targets=["algo_1"],
+                    distribution=DistributionMode.COMPETING,
+                    strategy=CompetingStrategy.ROUND_ROBIN,
+                ),
+                ConnectionConfig(
+                    source="provider_1",
+                    targets=["algo_2"],
+                    distribution=DistributionMode.COMPETING,
+                    strategy=CompetingStrategy.RANDOM,
+                ),
+            ],
+            components_by_type={
+                "algorithm": [
+                    ComponentInstanceConfig(name="algo_1", type="test_algo"),
+                    ComponentInstanceConfig(name="algo_2", type="test_algo"),
+                ],
+                "data_provider": [
+                    ComponentInstanceConfig(name="provider_1", type="test_provider")
+                ],
+            },
+        )
+
+        errors = loader.validate(config)
+        assert len(errors) >= 1
+        assert any("conflicting" in e.lower() and "provider_1" in e for e in errors)
+
+    def test_validate_same_distribution_same_source_is_valid(
+        self, loader: ConfigLoader
+    ) -> None:
+        """Test that same distribution settings on same source are allowed."""
+        config = PipelineConfig(
+            global_config=GlobalConfig(name="test"),
+            connections=[
+                ConnectionConfig(
+                    source="provider_1",
+                    targets=["algo_1", "algo_2"],
+                    distribution=DistributionMode.FAN_OUT,
+                ),
+                ConnectionConfig(
+                    source="provider_1",
+                    targets=["algo_3"],
+                    distribution=DistributionMode.FAN_OUT,
+                ),
+            ],
+            components_by_type={
+                "algorithm": [
+                    ComponentInstanceConfig(name="algo_1", type="test_algo"),
+                    ComponentInstanceConfig(name="algo_2", type="test_algo"),
+                    ComponentInstanceConfig(name="algo_3", type="test_algo"),
+                ],
+                "data_provider": [
+                    ComponentInstanceConfig(name="provider_1", type="test_provider")
+                ],
+            },
+        )
+
+        errors = loader.validate(config)
+        # No conflicting distribution errors
+        assert not any("conflicting" in e.lower() for e in errors)
+
+    def test_validate_conflicting_uses_effective_settings_with_defaults(
+        self, loader: ConfigLoader
+    ) -> None:
+        """Test that conflict detection uses effective settings (including defaults)."""
+        # First connection uses default (fan_out), second explicitly sets competing
+        config = PipelineConfig(
+            global_config=GlobalConfig(
+                name="test",
+                defaults=DefaultsConfig(distribution=DistributionMode.FAN_OUT),
+            ),
+            connections=[
+                ConnectionConfig(
+                    source="provider_1",
+                    targets=["algo_1"],
+                    # distribution=None -> uses default (fan_out)
+                ),
+                ConnectionConfig(
+                    source="provider_1",
+                    targets=["algo_2"],
+                    distribution=DistributionMode.COMPETING,  # Conflicts with default
+                ),
+            ],
+            components_by_type={
+                "algorithm": [
+                    ComponentInstanceConfig(name="algo_1", type="test_algo"),
+                    ComponentInstanceConfig(name="algo_2", type="test_algo"),
+                ],
+                "data_provider": [
+                    ComponentInstanceConfig(name="provider_1", type="test_provider")
+                ],
+            },
+        )
+
+        errors = loader.validate(config)
+        assert len(errors) >= 1
+        assert any("conflicting" in e.lower() and "provider_1" in e for e in errors)
+
+    def test_validate_different_sources_can_have_different_distribution(
+        self, loader: ConfigLoader
+    ) -> None:
+        """Test that different sources can have different distribution settings."""
+        config = PipelineConfig(
+            global_config=GlobalConfig(name="test"),
+            connections=[
+                ConnectionConfig(
+                    source="provider_1",
+                    targets=["algo_1"],
+                    distribution=DistributionMode.FAN_OUT,
+                ),
+                ConnectionConfig(
+                    source="provider_2",
+                    targets=["algo_2"],
+                    distribution=DistributionMode.COMPETING,
+                ),
+            ],
+            components_by_type={
+                "algorithm": [
+                    ComponentInstanceConfig(name="algo_1", type="test_algo"),
+                    ComponentInstanceConfig(name="algo_2", type="test_algo"),
+                ],
+                "data_provider": [
+                    ComponentInstanceConfig(name="provider_1", type="test_provider"),
+                    ComponentInstanceConfig(name="provider_2", type="test_provider"),
+                ],
+            },
+        )
+
+        errors = loader.validate(config)
+        # No conflicting distribution errors (different sources)
+        assert not any("conflicting" in e.lower() for e in errors)
+
 
 # =============================================================================
 # ConfigLoader Registry Validation Tests
